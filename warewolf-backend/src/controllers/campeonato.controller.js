@@ -6,6 +6,7 @@ const Modalidade = require('../models/Modalidade');
 const Time = require('../models/Time');
 const Partida = require('../models/Partida');
 
+// Cria um novo campeonato e o associa a múltiplas modalidades
 exports.criar = async (req, res) => {
   try {
     const { nome, descricao, dataInicio, dataFim, modalidadeIds } = req.body;
@@ -28,22 +29,24 @@ exports.criar = async (req, res) => {
   }
 };
 
+// Lista os campeonatos e inclui as modalidades de cada um
 exports.listar = async (req, res) => {
   try {
     const campeonatos = await Campeonato.findAll({
       order: [['dataInicio', 'DESC']],
-      include: {
+      include: [{
         model: Modalidade,
         attributes: ['id', 'nome'],
         through: { attributes: [] }
-      }
+      }]
     });
     res.json(campeonatos);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Erro ao listar campeonatos: ' + err.message });
   }
 };
 
+// Inscreve uma equipe em uma modalidade específica de um campeonato
 exports.inscrever = async (req, res) => {
   try {
     const userId = req.userId;
@@ -66,63 +69,25 @@ exports.inscrever = async (req, res) => {
   }
 };
 
+// Atualiza os dados de um campeonato
 exports.atualizar = async (req, res) => {
-  try {
-    const partidaAtual = await Partida.findByPk(req.params.id);
-    if (!partidaAtual) return res.status(404).json({ error: 'Partida não encontrada' });
-
-    const { placarEquipe1, placarEquipe2 } = req.body;
-    const p1 = parseInt(placarEquipe1, 10);
-    const p2 = parseInt(placarEquipe2, 10);
-    let vencedorId = null;
-
-    if (!isNaN(p1) && !isNaN(p2)) {
-        if (p1 > p2) vencedorId = partidaAtual.equipe1Id;
-        else if (p2 > p1) vencedorId = partidaAtual.equipe2Id;
+    try {
+      const { nome, descricao, dataInicio, dataFim, modalidadeIds } = req.body;
+      const campeonato = await Campeonato.findByPk(req.params.id);
+      if (!campeonato) {
+        return res.status(404).json({ error: 'Campeonato não encontrado' });
+      }
+      await campeonato.update({ nome, descricao, dataInicio, dataFim });
+      if (modalidadeIds) {
+          await campeonato.setModalidades(modalidadeIds);
+      }
+      res.json(campeonato);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-    
-    await partidaAtual.update({ placarEquipe1: p1, placarEquipe2: p2, vencedorId });
-
-    // LÓGICA DE AVANÇO AUTOMÁTICO - "JUST-IN-TIME"
-    if (vencedorId) {
-        // Encontra todas as partidas da mesma fase que já terminaram
-        const partidasFinalizadasDaRodada = await Partida.findAll({
-            where: {
-                fase: partidaAtual.fase,
-                campeonatoId: partidaAtual.campeonatoId,
-                modalidadeId: partidaAtual.modalidadeId,
-                vencedorId: { [Op.ne]: null }
-            }
-        });
-        
-        // A cada 2 vencedores, cria uma nova partida na próxima fase
-        if (partidasFinalizadasDaRodada.length >= 2 && partidasFinalizadasDaRodada.length % 2 === 0) {
-            // Pega os dois últimos vencedores que ainda não jogaram na próxima fase
-            const ultimoVencedor = partidasFinalizadasDaRodada[partidasFinalizadasDaRodada.length - 1].vencedorId;
-            const penultimoVencedor = partidasFinalizadasDaRodada[partidasFinalizadasDaRodada.length - 2].vencedorId;
-
-            // Define o nome da próxima fase
-            const numPartidasNaFase = await Partida.count({where: {fase: partidaAtual.fase, campeonatoId: partidaAtual.campeonatoId, modalidadeId: partidaAtual.modalidadeId }});
-            let proximaFaseNome = `Rodada de ${numPartidasNaFase / 2}`;
-            if(numPartidasNaFase === 2) proximaFaseNome = 'Final';
-            if(numPartidasNaFase === 4) proximaFaseNome = 'Semifinal';
-
-            await Partida.create({
-                fase: proximaFaseNome,
-                campeonatoId: partidaAtual.campeonatoId,
-                modalidadeId: partidaAtual.modalidadeId,
-                equipe1Id: penultimoVencedor,
-                equipe2Id: ultimoVencedor,
-            });
-        }
-    }
-
-    res.json(partidaAtual);
-  } catch (err) {
-    console.error("ERRO AO ATUALIZAR PARTIDA:", err);
-    res.status(500).json({ error: err.message });
-  }
 };
+
+// Remove um campeonato
 exports.remover = async (req, res) => {
   try {
     const campeonato = await Campeonato.findByPk(req.params.id);
@@ -136,3 +101,104 @@ exports.remover = async (req, res) => {
   }
 };
 
+// Lista os times inscritos em uma modalidade de um campeonato
+exports.listarTimesInscritos = async (req, res) => {
+    try {
+        const { campeonatoId, modalidadeId } = req.params;
+        const times = await Time.findAll({
+            where: { campeonatoId, modalidadeId },
+            include: [{ model: Equipe, attributes: ['nome'] }]
+        });
+        res.json(times);
+    } catch (err) {
+        res.status(500).json({ error: 'Erro ao buscar times inscritos.' });
+    }
+};
+
+// Gera o chaveamento (versão final)
+exports.gerarChaveamento = async (req, res) => {
+    try {
+        const { campeonatoId, modalidadeId } = req.params;
+        const partidasExistentes = await Partida.count({ where: { campeonatoId, modalidadeId } });
+        if (partidasExistentes > 0) {
+            return res.status(400).json({ error: 'O chaveamento para esta modalidade já foi gerado.' });
+        }
+        let times = await Time.findAll({ where: { campeonatoId, modalidadeId } });
+        if (times.length < 2) {
+            return res.status(400).json({ error: 'São necessários pelo menos 2 times para gerar um chaveamento.' });
+        }
+        for (let i = times.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [times[i], times[j]] = [times[j], times[i]];
+        }
+        let participantes = times.map(t => ({ id: t.equipeId }));
+        let proximaRodada = [];
+        if (participantes.length % 2 !== 0) {
+            proximaRodada.push(participantes.pop());
+        }
+        let partidasParaCriar = [];
+        for(let i = 0; i < participantes.length; i += 2) {
+            partidasParaCriar.push({
+                fase: 'Rodada 1',
+                campeonatoId,
+                modalidadeId,
+                equipe1Id: participantes[i].id,
+                equipe2Id: participantes[i+1].id,
+            });
+        }
+        await Partida.bulkCreate(partidasParaCriar);
+        if (proximaRodada.length > 0) {
+            await Partida.create({
+                fase: 'Quartas de Final',
+                campeonatoId,
+                modalidadeId,
+                equipe1Id: proximaRodada[0].id,
+                equipe2Id: null,
+            });
+        }
+        res.status(201).json({ message: 'Chaveamento da primeira rodada gerado com sucesso!' });
+    } catch (err) {
+        console.error("ERRO AO GERAR CHAVEAMENTO:", err);
+        res.status(500).json({ error: 'Erro ao gerar chaveamento: ' + err.message });
+    }
+};
+
+// Agenda os horários das partidas
+exports.agendarPartidas = async (req, res) => {
+  try {
+      const { campeonatoId, modalidadeId } = req.params;
+      const { dataInicioTorneio, duracaoPartida, horarioInicioDiario, horarioFimDiario, intervaloEntrePartidas, horarioInicioAlmoco, horarioFimAlmoco } = req.body;
+      if (!dataInicioTorneio || !duracaoPartida || !horarioInicioDiario || !horarioFimDiario) {
+          return res.status(400).json({ error: 'Parâmetros de agendamento insuficientes.' });
+      }
+      const partidasParaAgendar = await Partida.findAll({ where: { campeonatoId, modalidadeId, dataHoraInicio: null }, order: [['id', 'ASC']] });
+      if (partidasParaAgendar.length === 0) {
+          return res.status(200).json({ message: 'Nenhuma partida nova para agendar.' });
+      }
+      const [inicioH, inicioM] = horarioInicioDiario.split(':').map(Number);
+      const [fimH, fimM] = horarioFimDiario.split(':').map(Number);
+      const [almocoInicioH, almocoInicioM] = horarioInicioAlmoco.split(':').map(Number);
+      const [almocoFimH, almocoFimM] = horarioFimAlmoco.split(':').map(Number);
+      let cursorTempo = new Date(`${dataInicioTorneio}T${horarioInicioDiario}:00`);
+      for (const partida of partidasParaAgendar) {
+          let proximoHorarioDisponivel = new Date(cursorTempo);
+          let fimDaPartidaAtual = new Date(proximoHorarioDisponivel.getTime() + duracaoPartida * 60000);
+          if (fimDaPartidaAtual.getHours() > fimH || (fimDaPartidaAtual.getHours() === fimH && fimDaPartidaAtual.getMinutes() > fimM)) {
+              proximoHorarioDisponivel.setDate(proximoHorarioDisponivel.getDate() + 1);
+              proximoHorarioDisponivel.setHours(inicioH, inicioM, 0, 0);
+          }
+          let inicioPartidaH = proximoHorarioDisponivel.getHours();
+          if (inicioPartidaH >= almocoInicioH && inicioPartidaH < almocoFimH) {
+              proximoHorarioDisponivel.setHours(almocoFimH, almocoFimM, 0, 0);
+          }
+          const dataHoraInicio = new Date(proximoHorarioDisponivel);
+          const dataHoraFim = new Date(dataHoraInicio.getTime() + duracaoPartida * 60000);
+          await partida.update({ dataHoraInicio, dataHoraFim });
+          cursorTempo = new Date(dataHoraFim.getTime() + (parseInt(intervaloEntrePartidas, 10) || 0) * 60000);
+      }
+      res.json({ message: `${partidasParaAgendar.length} partidas foram agendadas com sucesso.` });
+  } catch (err) {
+      console.error("ERRO AO AGENDAR PARTIDAS:", err);
+      res.status(500).json({ error: 'Erro ao agendar partidas: ' + err.message });
+  }
+};

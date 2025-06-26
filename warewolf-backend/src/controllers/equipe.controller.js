@@ -4,6 +4,7 @@ const Inscricao = require('../models/Inscricao');
 const Campeonato = require('../models/Campeonato');
 const Modalidade = require('../models/Modalidade');
 const Partida = require('../models/Partida');
+const Time = require('../models/Time');
 
 // --- Funções para a Equipe gerenciar a si própria ---
 
@@ -11,7 +12,8 @@ exports.criarOuAtualizar = async (req, res) => {
   try {
     const userId = req.userId;
     const existente = await Equipe.findOne({ where: { userId } });
-    const dadosEquipe = { ...req.body, userId };
+    const { nome, sigla, cnpj, instituicao, endereco, cep, representanteNome, representanteRG, representanteCPF, representanteOrgaoExp, representanteEndereco, representanteCEP, logo, historia } = req.body;
+    const dadosEquipe = { nome, sigla, cnpj, instituicao, endereco, cep, representanteNome, representanteRG, representanteCPF, representanteOrgaoExp, representanteEndereco, representanteCEP, logo, historia, userId };
     let equipe;
     if (existente) {
       await existente.update(dadosEquipe);
@@ -38,47 +40,46 @@ exports.obter = async (req, res) => {
 };
 
 exports.minhasInscricoes = async (req, res) => {
-  try {
-    const equipe = await Equipe.findOne({ where: { userId: req.userId } });
-    if (!equipe) {
-      return res.status(403).json({ error: 'Nenhuma equipe encontrada para este usuário.' });
+    try {
+        const equipe = await Equipe.findOne({ where: { userId: req.userId } });
+        if (!equipe) {
+            return res.status(403).json({ error: 'Nenhuma equipe encontrada para este usuário.' });
+        }
+        const inscricoes = await Inscricao.findAll({
+            where: { equipeId: equipe.id },
+            include: [
+                { model: Campeonato, attributes: ['id', 'nome'] },
+                { model: Modalidade, attributes: ['id', 'nome', 'minAtletas', 'maxAtletas'] }
+            ]
+        });
+        res.json(inscricoes);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    const inscricoes = await Inscricao.findAll({
-      where: { equipeId: equipe.id },
-      include: [
-        { model: Campeonato, attributes: ['id', 'nome'] },
-        { model: Modalidade, attributes: ['id', 'nome', 'minAtletas', 'maxAtletas'] }
-      ]
-    });
-    res.json(inscricoes);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 };
 
 exports.uploadLogo = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'Nenhum arquivo de logo enviado.' });
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'Nenhum arquivo de logo enviado.' });
+        }
+        const equipe = await Equipe.findOne({ where: { userId: req.userId } });
+        if (!equipe) {
+            return res.status(404).json({ error: 'Equipe não encontrada para este usuário.' });
+        }
+        const logoUrl = `/files/${req.file.filename}`;
+        await equipe.update({ logo: logoUrl });
+        const equipeAtualizada = await Equipe.findByPk(equipe.id);
+        res.json({ message: 'Logo atualizado com sucesso!', equipe: equipeAtualizada });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    const equipe = await Equipe.findOne({ where: { userId: req.userId } });
-    if (!equipe) {
-      return res.status(404).json({ error: 'Equipe não encontrada para este usuário.' });
-    }
-    const logoUrl = `/files/${req.file.filename}`;
-    await equipe.update({ logo: logoUrl });
-    res.json({ message: 'Logo atualizado com sucesso!', equipe });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
 };
 
 exports.proximaPartida = async (req, res) => {
     try {
         const equipe = await Equipe.findOne({ where: { userId: req.userId } });
-        if (!equipe) {
-            return res.json(null);
-        }
+        if (!equipe) return res.json(null);
 
         const proximaPartida = await Partida.findOne({
             where: {
@@ -88,21 +89,16 @@ exports.proximaPartida = async (req, res) => {
             include: [
                 { model: Equipe, as: 'equipe1', attributes: ['nome'] },
                 { model: Equipe, as: 'equipe2', attributes: ['nome'] },
-                // AQUI ESTAVA O PROBLEMA: Faltava o 'as' na associação com Campeonato e Modalidade
                 { model: Campeonato, as: 'campeonato', attributes: ['nome'] },
                 { model: Modalidade, as: 'modalidade', attributes: ['nome'] }
             ],
             order: [['id', 'ASC']]
         });
-
         res.json(proximaPartida);
-
     } catch (err) {
-        console.error("Erro no backend ao buscar próxima partida:", err);
         res.status(500).json({ error: 'Erro ao buscar próxima partida.' });
     }
 };
-
 
 // --- Funções para a Comissão gerenciar TODAS as equipes ---
 
